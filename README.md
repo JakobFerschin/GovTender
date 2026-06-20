@@ -1,60 +1,207 @@
+<div align="center">
+
+<img src="https://img.shields.io/badge/Architecture-Non%20LLM%20First-0f172a?style=flat-square" alt="Non-LLM First">
+<img src="https://img.shields.io/badge/TypeScript-5.6-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
+<img src="https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=nextdotjs" alt="Next.js">
+<img src="https://img.shields.io/badge/Supabase-pgvector-1c8c5e?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
+<img src="https://img.shields.io/badge/Mistral%20AI-Optional%20Enhancement-f97316?style=flat-square" alt="Mistral AI">
+
+<br><br>
+
 # GovTender AI
 
-AI-driven analyzer for EU & DACH public procurement tenders. Scrapes notices,
-parses bureaucratic PDFs into structured data, and uses LLM + vector search to
-predict likely winners and surface technology trends.
+**EU & DACH Government Tender Intelligence Platform**
 
-> **Status:** Phase 1 — Database & extraction schema. This is the foundation;
-> ingestion orchestration (n8n), the predictive engine, and the dashboard land
-> in later phases.
+Deterministic parsing, relational matching, and optional LLM enhancement
+for public procurement analytics.
+
+<br>
+
+</div>
 
 ---
 
-## Phase 1 deliverables
+## What it does
 
-| Deliverable | Location |
-|---|---|
-| Supabase SQL schema (pgvector, RLS, search fns) | `supabase/migrations/0001_init.sql` |
-| Typed Mistral extraction utility (Zod-validated) | `src/lib/extraction/` |
-| Runnable demo against a sample tender | `src/lib/extraction/demo.ts` |
+GovTender AI ingests public procurement notices from EU TED, Swiss SIMAP,
+German evergabe, and other OCDS-compatible sources. It extracts structured
+data **without requiring an LLM**, matches tenders against historical awards
+using **pure relational CPV+geography queries**, and surfaces actionable
+intelligence in a premium executive dashboard.
+
+The LLM (Mistral AI) is an **optional enhancement layer** — the pipeline
+runs fully deterministic and failsafe even when no API key is configured.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Data Sources (n8n / API)                       │
+│   TED · SIMAP · evergabe · e-VERGABE · OCDS feeds               │
+└─────────────┬───────────────────────────────────────────────────┘
+              │  raw JSON / XML
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 1 — Deterministic Ingestion (zero LLM dependency)        │
+│                                                                 │
+│  parseOcdsJson()  →  mapRelease()  →  TenderRecord              │
+│  ─────────────────────────────────────────────────               │
+│  • Strict OCDS 1.1 parsing with Zod-validated types             │
+│  • CPV code normalization (check-digit stripping, 8-digit pad)  │
+│  • Country normalization (ISO-3166 alpha-2 from any input)     │
+│  • Fail-safe: malformed input → null, never crashes             │
+└─────────────┬───────────────────────────────────────────────────┘
+              │  TenderRecord (technologies = [])
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 2 — Conditional LLM Enhancement (optional)              │
+│                                                                 │
+│  enhanceTechnologies(existing, description)                     │
+│  ─────────────────────────────────────────────────               │
+│  • Runs ONLY when required_technologies is empty               │
+│  • Extracts ONLY tech names from the description string         │
+│  • On failure: degrades to [] — pipeline never throws           │
+│  • Full document extraction (extractTender) retained as        │
+│    a fallback for non-OCDS / scanned documents                  │
+└─────────────┬───────────────────────────────────────────────────┘
+              │  TenderRecord (technologies filled)
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 3 — Persistence (Supabase)                                │
+│                                                                 │
+│  persistTender()  ·  persistAward()                             │
+│  ─────────────────────────────────────────────────               │
+│  • Idempotent upserts on (source, source_id)                    │
+│  • Company deduplication on (name, country)                     │
+│  • pgvector embeddings for semantic search (future use)         │
+│  • Row Level Security: reads open, writes via service role      │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Matching Engine                                                 │
+│                                                                 │
+│  match_tenders_by_cpv_and_location()     ← pure relational      │
+│  match_historical_awards_by_cpv()        ← pure relational      │
+│  match_tenders() / match_awards()        ← pgvector (future)    │
+│  ─────────────────────────────────────────────────               │
+│  • CPV hierarchical prefix expansion (8-digit → division-2)    │
+│  • Same-country bonus scoring                                   │
+│  • No embeddings required for core matching                     │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Dashboard (Next.js 16 · Tailwind v4)                            │
+│                                                                 │
+│  KPI Cards · Intelligence Table · Predictive Match Panel        │
+│  ─────────────────────────────────────────────────               │
+│  • Executive-grade UI, minimal ink, high data density           │
+│  • Real-time tender tracking across DACH region                 │
+│  • Predicted winner rankings from historical CPV overlap        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Project structure
+
+```
+govtender-ai/
+├── supabase/migrations/
+│   ├── 0001_init.sql                    # Schema: companies, tenders, awards, pgvector
+│   └── 0002_deterministic_matching.sql  # CPV prefix expansion + relational matching
+│
+├── src/lib/
+│   ├── ingestion/
+│   │   ├── ocds-types.ts                # OCDS 1.1 type definitions
+│   │   ├── ocds-mapper.ts               # Deterministic OCDS → TenderRecord mapper
+│   │   ├── cpv.ts                        # CPV normalization & prefix expansion
+│   │   ├── persist.ts                    # Supabase upsert layer (client-injectable)
+│   │   └── index.ts
+│   │
+│   ├── extraction/
+│   │   ├── schema.ts                     # Zod schema (single source of truth)
+│   │   ├── extract-tender.ts             # Full-document extraction (Phase 1 fallback)
+│   │   ├── enhance-tender.ts             # Conditional tech-only LLM enhancement
+│   │   ├── env.ts                        # Lazy env loading (never throws at import)
+│   │   └── index.ts
+│   │
+│   └── pipeline.ts                       # Orchestrator: parse → map → enhance → persist
+│
+├── src/tests/
+│   └── pipeline.e2e.ts                    # 26-case E2E test (runs keyless)
+│
+├── dashboard/                            # Next.js 16 executive dashboard
+│   └── src/
+│       ├── app/
+│       │   ├── layout.tsx                # Inter + Source Serif 4 typography
+│       │   ├── globals.css               # Tailwind v4 theme (navy/slate palette)
+│       │   └── page.tsx                  # Dashboard: KPIs, table, predictive panel
+│       ├── components/
+│       │   ├── card.tsx                  # Card primitives
+│       │   ├── table.tsx                 # Table primitives
+│       │   └── badge.tsx                 # Badge (default + muted)
+│       └── lib/
+│           ├── cn.ts                     # clsx + tailwind-merge
+│           └── mock-data.ts              # Demo tender & match data
+│
+├── package.json
+├── tsconfig.json
+└── .env.example
+```
 
 ---
 
 ## Quick start
 
-### 1. Database
+### Prerequisites
 
-Create a Supabase project (pgvector is enabled by default on new projects), then
-apply the migration. Either:
+- Node.js ≥ 20
+- Supabase project with `pgvector` enabled
+- (Optional) Mistral AI API key for LLM enhancement
+
+### 1. Install backend dependencies
+
+```bash
+npm install
+cp .env.example .env    # add keys (MISTRAL_API_KEY is optional)
+```
+
+### 2. Run the E2E test (no keys required)
+
+```bash
+npx tsx src/tests/pipeline.e2e.ts
+# → 26/26 [SUCCESS]
+```
+
+### 3. Apply database migrations
 
 ```bash
 supabase link --project-ref <your-ref>
 supabase db push
 ```
 
-…or paste `supabase/migrations/0001_init.sql` into the Supabase **SQL Editor**
-and run it. The migration is idempotent.
+Or paste the SQL files into the Supabase Dashboard → SQL Editor.
 
-### 2. Extraction utility
+### 4. Launch the dashboard
 
 ```bash
+cd dashboard
 npm install
-cp .env.example .env      # then add your MISTRAL_API_KEY
-npm run extract:demo      # runs the sample DACH tender through the extractor
+npm run dev
+# → http://localhost:3000
 ```
 
-### 3. Use it programmatically
+### 5. (Optional) Test LLM extraction
 
-```ts
-import { extractTender } from "./src/lib/extraction/index.js";
-
-const { data, attempts } = await extractTender(scrapedPdfText);
-// data.title, data.estimated_budget, data.required_technologies, data.awarding_authority
+```bash
+MISTRAL_API_KEY=your_key npm run extract:demo
 ```
 
 ---
 
-## Schema overview
+## Database schema
 
 ```
 companies ─┐
@@ -63,71 +210,87 @@ companies ─┐
            └─◄── historical_awards  (past winners,  + embedding vector(1024))
 ```
 
-- **`companies`** — both buyers and suppliers, deduped on `(name, country)`.
-- **`tenders`** — active notices. `embedding` (mistral-embed, 1024 dims) is built
-  from title + description + CPV codes + required tech. Indexed with HNSW.
-- **`historical_awards`** — past award notices with their winners. Own embedding
-  so the predictive engine can match a *new* tender directly against past awards.
+| Table | Rows (typical) | Key features |
+|---|---|---|
+| `companies` | Buyers + suppliers | Deduped on `(name, country)`, trigram search |
+| `tenders` | Active procurement notices | CPV GIN index, country, HNSW embedding index |
+| `historical_awards` | Past contract awards | Own embedding for direct winner prediction |
 
-### Vector search
+### Matching functions
 
-Two `STABLE` SQL functions back the (Phase 3) predictive engine:
-
-- `match_tenders(query_embedding, match_count, threshold, status)` — nearest
-  active tenders by cosine similarity.
-- `match_historical_awards(query_embedding, match_count, threshold)` — nearest
-  past awards; the winner names of the top hits feed winner prediction.
-
-Similarity is returned as `1 - cosine_distance` (1.0 = identical).
-
-### Row Level Security
-
-Procurement notices are public data, so **read access is open** to the
-`anon`/`authenticated` roles. **No write policies are defined** — writes are
-expected to come from trusted workers (n8n, Edge Functions) using the
-**service role key**, which bypasses RLS. Organisation-scoped write policies
-land in Phase 2.
+| Function | Type | Use case |
+|---|---|---|
+| `match_tenders_by_cpv_and_location()` | Relational (CPV + country) | Find similar active tenders |
+| `match_historical_awards_by_cpv()` | Relational (CPV + country) | Predict likely winners |
+| `match_tenders()` | Semantic (pgvector) | Fuzzy similarity search (future) |
+| `match_historical_awards()` | Semantic (pgvector) | Fuzzy winner prediction (future) |
 
 ---
 
-## Extraction design
+## Key design decisions
 
-`extractTender(rawText)` enforces a strict contract using three layers:
+### "Non-LLM First" architecture
 
-1. **Prompt constraint** — `responseFormat: { type: 'json_object' }` plus a
-   system prompt that lists exact field names, types, and extraction rules.
-2. **Defensive parsing** — `safeJsonParse()` handles raw JSON, ```` ```json ````
-   fences, and leading commentary.
-3. **Zod validation + repair** — `TenderExtractionSchema` validates and
-   normalises (e.g. lowercases + dedupes technologies). On failure, the Zod
-   issues are fed back to the model as a repair hint for one retry.
+The core pipeline — parsing, mapping, country normalization, CPV extraction,
+persistence, and relational matching — runs entirely on deterministic code.
+The Mistral LLM is invoked **only** as an optional enhancement when
+`required_technologies` cannot be derived from the structured OCDS payload.
 
-The schema lives in one place (`schema.ts`) and is reused as the prompt
-contract, the validator, and (Phase 2) the mapper onto DB columns.
+This means:
+- The pipeline works offline, keyless, and in air-gapped environments
+- Cost per tender is effectively €0 (no LLM API calls for standard OCDS)
+- LLM latency is avoided on the critical path
+- The system degrades gracefully: if Mistral is down, tenders still ingest
+
+### CPV hierarchical matching
+
+Rather than relying solely on vector similarity (which requires embedding
+generation per tender), the primary matching engine expands CPV codes into
+their 2–8 digit hierarchical prefixes. This means `"48000000"` (software
+package) matches `"48217000"` (network software) at the `"48"` division
+level — using a standard SQL join, no embeddings required.
+
+### Lazy environment loading
+
+`env.ts` uses JavaScript getters so the module can be imported without
+requiring `MISTRAL_API_KEY`. The key is only demanded when an actual LLM
+call is attempted. This was necessary to keep the deterministic ingestion
+path and E2E tests fully independent of LLM configuration.
+
+### Client injection for testability
+
+`persistTender()` and `persistAward()` accept an optional Supabase client
+parameter. The E2E test injects a mock client — no real database needed,
+no Supabase credentials required.
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Database & Auth | Supabase (PostgreSQL + pgvector) |
+| Ingestion orchestration | n8n (automated daily scraping) |
+| LLM enhancement | Mistral AI (optional, `mistral-small-latest`) |
+| Embeddings | Mistral Embed (`mistral-embed`, 1024 dims) |
+| Backend | TypeScript, Zod, OCDS types |
+| Frontend | Next.js 16 (App Router), Tailwind CSS v4 |
+| Document parsing | LlamaParse (for scanned PDFs, future) |
 
 ---
 
 ## Roadmap
 
-- **Phase 2** — Data ingestion: n8n scraping jobs (TED, SIMAP, evergabe),
-  LlamaParse PDF/OCR step, embedding generation, Supabase write paths.
-- **Phase 3** — Predictive matching engine: vector search → win-probability
-  scoring against `historical_awards`.
-- **Phase 4** — Next.js analytics dashboard with AI summaries & tech-trend
-  filters.
+- [x] **Phase 1** — Database schema with pgvector, Zod-validated extraction
+- [x] **Phase 2** — Deterministic OCDS ingestion, CPV matching, conditional LLM
+- [x] **Phase 3** — E2E test suite, executive dashboard
+- [ ] **Phase 4** — n8n scraping workflows (TED, SIMAP, evergabe)
+- [ ] **Phase 5** — Auth (organisation-scoped access, multi-tenant)
+- [ ] **Phase 6** — Live Supabase integration in dashboard, real-time updates
+- [ ] **Phase 7** — Embedding generation + semantic search toggle
 
 ---
 
-## Configuration
+## License
 
-| Env var | Default | Purpose |
-|---|---|---|
-| `MISTRAL_API_KEY` | *(required)* | Mistral platform key |
-| `MISTRAL_MODEL` | `mistral-small-latest` | Chat model for extraction |
-| `MISTRAL_EMBEDDING_MODEL` | `mistral-embed` | Must match the `vector(1024)` column |
-| `SUPABASE_URL` | — | Phase 2 |
-| `SUPABASE_SERVICE_ROLE_KEY` | — | Phase 2 |
-
-> If you ever change the embedding provider, recreate the `embedding` columns
-> with the matching dimension and update the `match_*` functions. The header
-> comment in `0001_init.sql` lists the common dimensions.
+Private — all rights reserved.

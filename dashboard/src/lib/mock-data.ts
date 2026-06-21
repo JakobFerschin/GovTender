@@ -9,6 +9,7 @@ export interface Tender {
   technologies: string[];
   cpvCodes: string[];
   description: string;
+  sourceUrl: string;
 }
 
 export interface HistoricalMatch {
@@ -45,6 +46,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["48000000", "72267100"],
     description:
       "Aufbau einer Kubernetes-basierten Containerplattform mit PostgreSQL-Migration, ElasticSearch-SIEM und Beratung zu Zero-Trust-Architektur (ISO 27001).",
+    sourceUrl: "https://ted.europa.eu/search?q=484837262-99",
     technologies: ["kubernetes", "postgresql", "elasticsearch", "iso 27001"],
     matches: [
       {
@@ -100,6 +102,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["72000000", "72300000"],
     description:
       "Komplettsanierung des Rechenzentrums inkl. VMware-Infrastruktur, SAP S/4HANA-Migration und Disaster-Recovery-Konzept.",
+    sourceUrl: "https://ted.europa.eu/search?q=723182645-2026",
     technologies: ["vmware", "linux", "sap s/4hana", "disaster recovery"],
     matches: [
       {
@@ -135,6 +138,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["48000000", "72200000"],
     description:
       "Neugestaltung des E-Government-Portals mit React-Frontend, Node.js-Backend und OpenID Connect API-Gateway.",
+    sourceUrl: "https://www.simap.ch/de/wbac/2026_291405",
     technologies: ["react", "node.js", "openid connect", "rest api"],
     matches: [
       {
@@ -160,6 +164,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["31620000", "48000000"],
     description:
       "IoT-Sensorinfrastruktur für Verkehrsflussanalyse mit Python-Backend, TimescaleDB und MQTT-Protokoll.",
+    sourceUrl: "https://www.evergabe-online.de/tenderdetails/2026_7381",
     technologies: ["iot", "python", "timescaledb", "mqtt"],
     matches: [
       {
@@ -185,6 +190,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["72250000", "72310000"],
     description:
       "NLP-basierte Automatisierung der Dokumentenanalyse mit LLM-Integration und OCR-Pipeline für Behördenakten.",
+    sourceUrl: "https://ted.europa.eu/search?q=384921005-2026",
     technologies: ["nlp", "python", "llm", "document ocr"],
     matches: [
       {
@@ -220,6 +226,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["32410000"],
     description:
       "Projektmanagement und technischer Support beim Breitband-Ausbau in unterversorgten Gebieten Südtirols.",
+    sourceUrl: "https://www.appalti.provincia.bz.it/avvisi/2026_18402",
     technologies: ["fiber optics", "project management"],
     matches: [
       {
@@ -245,6 +252,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["72230000", "72300000"],
     description:
       "Migration von SAP R/3 auf S/4HANA inkl. Change-Management und Schulung von 12.000 Mitarbeitenden in 47 Behörden.",
+    sourceUrl: "https://www.vergabe-bw.de/VMPS/Net/2006_884205",
     technologies: ["sap s/4hana", "change management", "linux"],
     matches: [
       {
@@ -290,6 +298,7 @@ export const TENDERS: TenderWithMatches[] = [
     cpvCodes: ["31680000", "71300000"],
     description:
       "Pilotprojekt für autonome Lastenroboter im innerstädtischen Zustellbetrieb Wien. 6 Monate Testphase mit Evaluationsbericht.",
+    sourceUrl: "https://www.auftragsportal.at/tender/2026_58204",
     technologies: ["robotics", "iot", "python", "edge computing"],
     matches: [
       {

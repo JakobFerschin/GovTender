@@ -404,9 +404,14 @@ function DetailPanel({
                 </>
               )}
             </button>
-            <button className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity">
+            <a
+              href={tender.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
+            >
               <ExternalLink className="h-4 w-4" /> View Source
-            </button>
+            </a>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Activity,
   TrendingUp,
@@ -20,6 +20,7 @@ import {
   AlertTriangle,
   Tag,
   Users,
+  Loader2,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/card";
 import { Badge } from "@/components/badge";
@@ -46,6 +47,12 @@ import {
 /* ── Types ─────────────────────────────────────────────────────────────── */
 
 type SortDir = "asc" | "desc";
+
+/** Shape returned by GET /api/tenders. */
+interface TendersResponse {
+  count: number;
+  tenders: (Tender & { matches: HistoricalMatch[]; description: string; cpvCodes: string[] })[];
+}
 
 /* ── KPI Cards ──────────────────────────────────────────────────────────── */
 
@@ -422,6 +429,34 @@ function DetailPanel({
 /* ── Dashboard ──────────────────────────────────────────────────────────── */
 
 export default function DashboardPage() {
+  // Data state — fetched from /api/tenders, falls back to bundled mock.
+  const [tenders, setTenders] = useState<typeof TENDERS>(TENDERS);
+  const [loading, setLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<"api" | "fallback">("fallback");
+
+  // Fetch once on mount. If the API call fails, keep the mock data.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/tenders", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: TendersResponse = await res.json();
+        if (!cancelled && data.tenders?.length > 0) {
+          setTenders(data.tenders);
+          setDataSource("api");
+        }
+      } catch {
+        // Silently keep the bundled mock data.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Filter state
   const [search, setSearch] = useState("");
   const [countryFilter, setCountryFilter] = useState("ALL");
@@ -434,14 +469,14 @@ export default function DashboardPage() {
 
   // Detail panel
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = TENDERS.find((t) => t.id === selectedId) ?? null;
+  const selected = tenders.find((t) => t.id === selectedId) ?? null;
 
   // Watchlist view toggle
   const [watchlistOnly, setWatchlistOnly] = useState(false);
 
   // Filtered tenders
   const filtered = useMemo(() => {
-    let result = [...TENDERS];
+    let result = [...tenders];
 
     // Watchlist
     if (watchlistOnly) {
@@ -485,7 +520,7 @@ export default function DashboardPage() {
     });
 
     return result;
-  }, [search, countryFilter, techFilter, sortDir, showExpired, bookmarks, watchlistOnly]);
+  }, [tenders, search, countryFilter, techFilter, sortDir, showExpired, bookmarks, watchlistOnly]);
 
   // KPIs from filtered data
   const activeCount = filtered.filter((t) => daysUntil(t.deadline) >= 0).length;
@@ -515,17 +550,32 @@ export default function DashboardPage() {
               with predictive winner matching
             </p>
           </div>
-          <button
-            onClick={() => setWatchlistOnly((v) => !v)}
-            className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-lg border transition-colors ${
-              watchlistOnly
-                ? "bg-primary text-primary-foreground border-primary"
-                : "border-border hover:bg-muted text-foreground"
-            }`}
-          >
-            <Users className="h-4 w-4" />
-            Watchlist ({bookmarks.size})
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Live status badge */}
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {loading ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+                </>
+              ) : (
+                <>
+                  <span className={`h-2 w-2 rounded-full ${dataSource === "api" ? "bg-green-500" : "bg-amber-500"}`} />
+                  {dataSource === "api" ? "Live data" : "Sample data"}
+                </>
+              )}
+            </span>
+            <button
+              onClick={() => setWatchlistOnly((v) => !v)}
+              className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                watchlistOnly
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "border-border hover:bg-muted text-foreground"
+              }`}
+            >
+              <Users className="h-4 w-4" />
+              Watchlist ({bookmarks.size})
+            </button>
+          </div>
         </div>
         <div className="mt-4 h-px bg-border" />
       </header>
@@ -638,7 +688,7 @@ export default function DashboardPage() {
         {(search || countryFilter !== "ALL" || techFilter || watchlistOnly) && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>
-              Showing {filtered.length} of {TENDERS.length} tenders
+              Showing {filtered.length} of {tenders.length} tenders
             </span>
             <button
               onClick={() => {

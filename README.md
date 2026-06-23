@@ -92,13 +92,27 @@ runs fully deterministic and failsafe even when no API key is configured.
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
+│  Source Adapters (Phase 4)                                      │
+│                                                                 │
+│  TedSource · OcdsFeedSource (SIMAP, evergabe, ...)            │
+│  ─────────────────────────────────────────────────               │
+│  • Parallel fan-out across platforms                           │
+│  • Graceful degradation: token/URL missing → fixtures          │
+│  • Mock-fetch injection for tests                               │
+└─────────────┬───────────────────────────────────────────────────┘
+              │  OcdsRelease[]
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │  Dashboard (Next.js 16 · Tailwind v4)                            │
 │                                                                 │
 │  KPI Cards · Intelligence Table · Predictive Match Panel        │
 │  ─────────────────────────────────────────────────               │
 │  • Executive-grade UI, minimal ink, high data density           │
-│  • Real-time tender tracking across DACH region                 │
-│  • Predicted winner rankings from historical CPV overlap        │
+│  • Live data indicator (green = API, amber = sample fallback)  │
+│  • GET /api/tenders with country & search params               │
+│  • Text search, country pills, tech-tag filters, deadline sort  │
+│  • Per-tender analysis slide panel with winner predictions      │
+│  • Watchlist / bookmarks, show/hide expired tenders            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,6 +134,14 @@ govtender-ai/
 │   │   ├── persist.ts                    # Supabase upsert layer (client-injectable)
 │   │   └── index.ts
 │   │
+│   ├── sources/                          # Phase 4: multi-platform source adapters
+│   │   ├── types.ts                      # SourceAdapter interface, safeFetchJson
+│   │   ├── ted.ts                        # EU TED API adapter (OCDS view)
+│   │   ├── ocds-feed.ts                  # Generic OCDS feed adapter (SIMAP, evergabe)
+│   │   ├── fixtures.ts                   # Keyless sample releases
+│   │   ├── orchestrator.ts              # Fan-out + ingest pipeline
+│   │   └── index.ts
+│   │
 │   ├── extraction/
 │   │   ├── schema.ts                     # Zod schema (single source of truth)
 │   │   ├── extract-tender.ts             # Full-document extraction (Phase 1 fallback)
@@ -130,14 +152,16 @@ govtender-ai/
 │   └── pipeline.ts                       # Orchestrator: parse → map → enhance → persist
 │
 ├── src/tests/
-│   └── pipeline.e2e.ts                    # 26-case E2E test (runs keyless)
+│   ├── pipeline.e2e.ts                    # 26-case E2E test (runs keyless)
+│   └── sources.test.ts                   # 15-case source adapter test (runs keyless)
 │
 ├── dashboard/                            # Next.js 16 executive dashboard
 │   └── src/
 │       ├── app/
 │       │   ├── layout.tsx                # Inter + Source Serif 4 typography
 │       │   ├── globals.css               # Tailwind v4 theme (navy/slate palette)
-│       │   └── page.tsx                  # Dashboard: KPIs, table, predictive panel
+│       │   ├── page.tsx                  # Dashboard: KPIs, table, analysis panel
+│       │   └── api/tenders/route.ts      # GET /api/tenders (country, search)
 │       ├── components/
 │       │   ├── card.tsx                  # Card primitives
 │       │   ├── table.tsx                 # Table primitives
@@ -168,11 +192,11 @@ npm install
 cp .env.example .env    # add keys (MISTRAL_API_KEY is optional)
 ```
 
-### 2. Run the E2E test (no keys required)
+### 2. Run the tests (no keys required)
 
 ```bash
-npx tsx src/tests/pipeline.e2e.ts
-# → 26/26 [SUCCESS]
+npx tsx src/tests/pipeline.e2e.ts    # → 26/26 [SUCCESS]
+npx tsx src/tests/sources.test.ts    # → 15/15 [SUCCESS]
 ```
 
 ### 3. Apply database migrations
@@ -270,10 +294,11 @@ no Supabase credentials required.
 | Layer | Technology |
 |---|---|
 | Database & Auth | Supabase (PostgreSQL + pgvector) |
-| Ingestion orchestration | n8n (automated daily scraping) |
+| Source adapters | EU TED API, OCDS feeds (SIMAP, evergabe) |
 | LLM enhancement | Mistral AI (optional, `mistral-small-latest`) |
 | Embeddings | Mistral Embed (`mistral-embed`, 1024 dims) |
 | Backend | TypeScript, Zod, OCDS types |
+| API | Next.js API routes (`GET /api/tenders`) |
 | Frontend | Next.js 16 (App Router), Tailwind CSS v4 |
 | Document parsing | LlamaParse (for scanned PDFs, future) |
 
@@ -283,8 +308,8 @@ no Supabase credentials required.
 
 - [x] **Phase 1** — Database schema with pgvector, Zod-validated extraction
 - [x] **Phase 2** — Deterministic OCDS ingestion, CPV matching, conditional LLM
-- [x] **Phase 3** — E2E test suite, executive dashboard
-- [ ] **Phase 4** — n8n scraping workflows (TED, SIMAP, evergabe)
+- [x] **Phase 3** — E2E test suite, executive dashboard with interactive features
+- [x] **Phase 4** — Multi-platform source adapters (TED, SIMAP, evergabe), API route, live data indicator
 - [ ] **Phase 5** — Auth (organisation-scoped access, multi-tenant)
 - [ ] **Phase 6** — Live Supabase integration in dashboard, real-time updates
 - [ ] **Phase 7** — Embedding generation + semantic search toggle

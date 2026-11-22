@@ -1,773 +1,678 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import * as React from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, RefreshCw } from "lucide-react";
+import { AppHeader, type AppTab } from "@/components/AppHeader";
+import { ExecutiveOverview } from "@/components/views/ExecutiveOverview";
 import {
-  Activity,
-  TrendingUp,
-  Layers,
-  ChevronRight,
-  Trophy,
-  MapPin,
-  Calendar,
-  Building2,
-  Search,
-  X,
-  Bookmark,
-  BookmarkCheck,
-  ArrowUpDown,
-  Clock,
-  ExternalLink,
-  AlertTriangle,
-  Tag,
-  Users,
-  Loader2,
-} from "lucide-react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/card";
-import { Badge } from "@/components/badge";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/table";
-import {
-  TENDERS,
-  COUNTRIES,
-  allTechnologies,
-  totalBudget,
-  formatCurrency,
-  daysUntil,
-  topTechFor,
-  type Tender,
-  type HistoricalMatch,
-} from "@/lib/mock-data";
+  TenderDesk,
+  type TenderDeskFilters,
+} from "@/components/views/TenderDesk";
+import { TenderDossierDrawer } from "@/components/views/TenderDossierDrawer";
+import { CompetitiveRadar } from "@/components/views/CompetitiveRadar";
+import { PipelineOpsView } from "@/components/views/PipelineOpsView";
+import type {
+  AnalyticsResponse,
+  BidVerdict,
+  DataSourceMode,
+  TendersApiResponse,
+  TendersFacetCounts,
+  TenderWithIntelligence,
+} from "@/lib/types";
 
-/* ── Types ─────────────────────────────────────────────────────────────── */
+/* ── Constants ──────────────────────────────────────────────────────────── */
 
-type SortDir = "asc" | "desc";
+const WATCHLIST_STORAGE_KEY = "govtender:watchlist:v1";
+const SEARCH_DEBOUNCE_MS = 180;
 
-/** Shape returned by GET /api/tenders. */
-interface TendersResponse {
-  count: number;
-  tenders: (Tender & { matches: HistoricalMatch[]; description: string; cpvCodes: string[] })[];
+const DEFAULT_FILTERS: TenderDeskFilters = {
+  q: "",
+  country: "ALL",
+  source: "ALL",
+  tech: null,
+  verdict: "ALL",
+  showExpired: false,
+  watchlistOnly: false,
+  sortBy: "score",
+  sortDir: "desc",
+};
+
+const EMPTY_FACETS: TendersFacetCounts = {
+  countries: [],
+  sources: [],
+  technologies: [],
+  sectors: [],
+};
+
+interface DeskNavigationPreset {
+  country?: string;
+  sector?: string;
+  tech?: string | null;
+  verdict?: BidVerdict | "ALL";
+  source?: string;
+  q?: string;
+  watchlistOnly?: boolean;
+  showExpired?: boolean;
 }
 
-/* ── KPI Cards ──────────────────────────────────────────────────────────── */
+/* ── Helpers ────────────────────────────────────────────────────────────── */
 
-function KpiCard({
-  label,
-  value,
-  sub,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  icon: React.ElementType;
-}) {
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest("[contenteditable='true']"));
+}
+
+interface ServerTenderFilterParams {
+  q: string;
+  country: string;
+  source: string;
+  tech: string | null;
+  verdict: BidVerdict | "ALL";
+  showExpired: boolean;
+  sortBy: TenderDeskFilters["sortBy"];
+  sortDir: TenderDeskFilters["sortDir"];
+}
+
+function buildTendersQueryParams(filters: ServerTenderFilterParams): string {
+  const params = new URLSearchParams();
+  const trimmedQ = filters.q.trim();
+
+  if (trimmedQ.length > 0) {
+    params.set("q", trimmedQ);
+  }
+  if (filters.country && filters.country !== "ALL") {
+    params.set("country", filters.country);
+  }
+  if (filters.source && filters.source !== "ALL") {
+    params.set("source", filters.source);
+  }
+  if (filters.tech && filters.tech.trim().length > 0) {
+    params.set("tech", filters.tech.trim());
+  }
+  if (filters.verdict && filters.verdict !== "ALL") {
+    params.set("verdict", filters.verdict);
+  }
+  if (filters.showExpired) {
+    params.set("showExpired", "true");
+  }
+  params.set("sortBy", filters.sortBy);
+  params.set("sortDir", filters.sortDir);
+
+  return params.toString();
+}
+
+function isDefaultServerFilterSet(filters: ServerTenderFilterParams): boolean {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle>{label}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold tracking-tight font-[family-name:var(--font-serif)]">
-          {value}
-        </div>
-        {sub && (
-          <p className="text-xs text-muted-foreground mt-1">{sub}</p>
-        )}
-      </CardContent>
-    </Card>
+    filters.q.trim().length === 0 &&
+    filters.country === "ALL" &&
+    filters.source === "ALL" &&
+    filters.tech === null &&
+    filters.verdict === "ALL" &&
+    !filters.showExpired
   );
 }
 
-/* ── Deadline indicator ────────────────────────────────────────────────── */
-
-function DeadlineChip({ deadline }: { deadline: string }) {
-  const days = daysUntil(deadline);
-  if (days < 0) return <Badge variant="muted">Expired</Badge>;
-  if (days <= 14)
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600">
-        <AlertTriangle className="h-3 w-3" />
-        {days}d
-      </span>
-    );
-  if (days <= 30)
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600">
-        <Clock className="h-3 w-3" />
-        {days}d
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-      <Clock className="h-3 w-3" />
-      {days}d
-    </span>
-  );
-}
-
-/* ── Tender Row ───────────────────────────────────────────────────────── */
-
-function TenderRow({
-  t,
-  isBookmarked,
-  onToggleBookmark,
-  onSelect,
-}: {
-  t: Tender;
-  isBookmarked: boolean;
-  onToggleBookmark: () => void;
-  onSelect: () => void;
-}) {
-  return (
-    <TableRow className="group cursor-pointer" onClick={onSelect}>
-      {/* Bookmark */}
-      <TableCell className="w-10">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleBookmark();
-          }}
-          className="p-1 rounded hover:bg-muted transition-colors"
-          title={isBookmarked ? "Remove from watchlist" : "Add to watchlist"}
-        >
-          {isBookmarked ? (
-            <BookmarkCheck className="h-4 w-4 text-primary" />
-          ) : (
-            <Bookmark className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground" />
-          )}
-        </button>
-      </TableCell>
-
-      {/* Authority */}
-      <TableCell className="font-medium min-w-[180px]">
-        <div className="flex items-center gap-2">
-          <Building2 className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
-          <div className="min-w-0">
-            <span className="truncate block">{t.authority}</span>
-            <span className="text-[11px] text-muted-foreground uppercase">{t.country}</span>
-          </div>
-        </div>
-      </TableCell>
-
-      {/* Title */}
-      <TableCell className="min-w-[240px]">
-        <span className="line-clamp-1">{t.title}</span>
-      </TableCell>
-
-      {/* Budget */}
-      <TableCell className="whitespace-nowrap tabular-nums">
-        {formatCurrency(t.budget, t.currency)}
-      </TableCell>
-
-      {/* Deadline */}
-      <TableCell className="whitespace-nowrap">
-        <DeadlineChip deadline={t.deadline} />
-      </TableCell>
-
-      {/* Technologies */}
-      <TableCell className="min-w-[160px]">
-        <div className="flex flex-wrap gap-1">
-          {t.technologies.length > 0
-            ? t.technologies.slice(0, 3).map((tech) => (
-                <Badge key={tech}>{tech}</Badge>
-              ))
-            : <Badge variant="muted">n/a</Badge>}
-          {t.technologies.length > 3 && (
-            <Badge variant="muted">+{t.technologies.length - 3}</Badge>
-          )}
-        </div>
-      </TableCell>
-
-      {/* Analyze button */}
-      <TableCell className="w-10">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelect();
-          }}
-          className="p-1.5 rounded hover:bg-muted transition-colors opacity-0 group-hover:opacity-100"
-          title="Analyze tender"
-        >
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </button>
-      </TableCell>
-    </TableRow>
-  );
-}
-
-/* ── Detail / Analysis Slide Panel ─────────────────────────────────────── */
-
-function DetailPanel({
-  tender,
-  isOpen,
-  onClose,
-  isBookmarked,
-  onToggleBookmark,
-}: {
-  tender: Tender & { matches: HistoricalMatch[]; description: string; cpvCodes: string[] };
-  isOpen: boolean;
-  onClose: () => void;
-  isBookmarked: boolean;
-  onToggleBookmark: () => void;
-}) {
-  if (!isOpen) return null;
-
-  const days = daysUntil(tender.deadline);
-  const avgScore =
-    tender.matches.length > 0
-      ? (tender.matches.reduce((s, m) => s + m.score, 0) / tender.matches.length).toFixed(1)
-      : "—";
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-foreground/20" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="relative w-full max-w-xl bg-card border-l border-border overflow-y-auto animate-slide-in">
-        {/* Header */}
-        <div className="sticky top-0 bg-card/95 backdrop-blur-sm border-b border-border z-10">
-          <div className="flex items-center justify-between p-6">
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Tender Analysis
-              </span>
-              <Badge variant="muted">{tender.country}</Badge>
-              <DeadlineChip deadline={tender.deadline} />
-            </div>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded hover:bg-muted transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="p-6 space-y-6">
-          {/* Title + Authority */}
-          <div>
-            <h2 className="text-lg font-semibold leading-snug mb-2">
-              {tender.title}
-            </h2>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Building2 className="h-3.5 w-3.5" />
-              {tender.authority}
-            </div>
-          </div>
-
-          {/* Key metrics row */}
-          <div className="grid grid-cols-3 gap-3">
-            <Card>
-              <CardContent className="p-3">
-                <div className="text-[11px] text-muted-foreground uppercase mb-1">Budget</div>
-                <div className="text-sm font-semibold tabular-nums">
-                  {formatCurrency(tender.budget, tender.currency)}
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="p-3">
-                <div className="text-[11px] text-muted-foreground uppercase mb-1">Deadline</div>
-                <div className="text-sm font-semibold">
-                  {days < 0 ? "Expired" : `${days} days`}
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="p-3">
-                <div className="text-[11px] text-muted-foreground uppercase mb-1">CPV Score</div>
-                <div className="text-sm font-semibold tabular-nums">{avgScore}</div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Description */}
-          <div>
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-              Description
-            </h3>
-            <p className="text-sm leading-relaxed">{tender.description}</p>
-          </div>
-
-          {/* Technologies */}
-          <div>
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
-              <Tag className="h-3 w-3" />
-              Required Technologies
-            </h3>
-            <div className="flex flex-wrap gap-1.5">
-              {tender.technologies.map((tech) => (
-                <Badge key={tech}>{tech}</Badge>
-              ))}
-            </div>
-          </div>
-
-          {/* CPV Codes */}
-          <div>
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-              CPV Codes
-            </h3>
-            <div className="flex flex-wrap gap-1.5">
-              {tender.cpvCodes.map((code) => (
-                <Badge key={code} variant="muted">{code}</Badge>
-              ))}
-            </div>
-          </div>
-
-          {/* Divider */}
-          <div className="h-px bg-border" />
-
-          {/* Likely Winners */}
-          <div>
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <Trophy className="h-3 w-3" />
-              Likely Winners ({tender.matches.length})
-            </h3>
-
-            {tender.matches.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No historical matches found for this tender&apos;s CPV profile.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {tender.matches.map((m, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/30 transition-colors"
-                  >
-                    {/* Rank */}
-                    <div className="flex items-center justify-center h-7 w-7 rounded-full bg-primary/5 text-primary text-[11px] font-bold shrink-0">
-                      {i + 1}
-                    </div>
-
-                    {/* Winner info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium truncate">
-                          {m.winnerName}
-                        </span>
-                        <span className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
-                          <MapPin className="h-2.5 w-2.5" />
-                          {m.winnerCountry}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground truncate mt-0.5">
-                        {m.awardTitle}
-                      </p>
-                    </div>
-
-                    {/* Score + Value */}
-                    <div className="text-right shrink-0">
-                      <div className="text-sm font-semibold tabular-nums">
-                        {formatCurrency(m.contractValue, m.currency)}
-                      </div>
-                      <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
-                        <Calendar className="h-2.5 w-2.5" />
-                        {m.awardDate}
-                      </div>
-                    </div>
-
-                    {/* Score bar */}
-                    <div className="flex flex-col items-end gap-0.5 shrink-0 w-14">
-                      <span className="text-[11px] font-semibold tabular-nums">{m.score}</span>
-                      <div className="h-1 w-full bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary/70 rounded-full"
-                          style={{ width: `${Math.min((m.score / 15) * 100, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <p className="text-[11px] text-muted-foreground mt-3">
-              Score = shared CPV prefixes + same-country bonus. Higher indicates stronger historical precedent.
-            </p>
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex gap-2 pt-2">
-            <button
-              onClick={onToggleBookmark}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border border-border hover:bg-muted transition-colors"
-            >
-              {isBookmarked ? (
-                <>
-                  <BookmarkCheck className="h-4 w-4" /> On Watchlist
-                </>
-              ) : (
-                <>
-                  <Bookmark className="h-4 w-4" /> Add to Watchlist
-                </>
-              )}
-            </button>
-            <a
-              href={tender.sourceUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
-            >
-              <ExternalLink className="h-4 w-4" /> View Source
-            </a>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Dashboard ──────────────────────────────────────────────────────────── */
+/* ── Application Shell ──────────────────────────────────────────────────── */
 
 export default function DashboardPage() {
-  // Data state — fetched from /api/tenders, falls back to bundled mock.
-  const [tenders, setTenders] = useState<typeof TENDERS>(TENDERS);
-  const [loading, setLoading] = useState(true);
-  const [dataSource, setDataSource] = useState<"api" | "fallback">("fallback");
+  // Navigation state (Executive Overview first)
+  const [activeTab, setActiveTab] = useState<AppTab>("overview");
 
-  // Fetch once on mount. If the API call fails, keep the mock data.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/tenders", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: TendersResponse = await res.json();
-        if (!cancelled && data.tenders?.length > 0) {
-          setTenders(data.tenders);
-          setDataSource("api");
-        }
-      } catch {
-        // Silently keep the bundled mock data.
-      } finally {
-        if (!cancelled) setLoading(false);
+  // Global data-source telemetry
+  const [dataSource, setDataSource] = useState<DataSourceMode>("sandbox");
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // Executive analytics state (GET /api/analytics)
+  const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+
+  // Unfiltered baseline tenders (used by ExecutiveOverview & fallback cache)
+  const [overviewTenders, setOverviewTenders] = useState<
+    TenderWithIntelligence[]
+  >([]);
+  const [tenderCache, setTenderCache] = useState<
+    Record<string, TenderWithIntelligence>
+  >({});
+
+  // Tender Desk server-filtered state (GET /api/tenders?...)
+  const [filters, setFilters] = useState<TenderDeskFilters>(DEFAULT_FILTERS);
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [deskTenders, setDeskTenders] = useState<TenderWithIntelligence[]>([]);
+  const [facets, setFacets] = useState<TendersFacetCounts>(EMPTY_FACETS);
+  const [totalCount, setTotalCount] = useState(0);
+  const [deskLoading, setDeskLoading] = useState(true);
+  const [deskError, setDeskError] = useState<string | null>(null);
+
+  // Watchlist state (hydration-safe via useEffect)
+  const [bookmarks, setBookmarks] = useState<Set<string>>(() => new Set());
+  const watchlistHydratedRef = useRef(false);
+
+  // Global Dossier Drawer state
+  const [selectedTenderId, setSelectedTenderId] = useState<string | null>(null);
+
+  // Search input ref for global `/` shortcut
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingSearchFocusRef = useRef(false);
+
+  // Server-bound filter slice (memoized so watchlist/un-debounced search edits don't re-fetch)
+  const serverFilters = useMemo<ServerTenderFilterParams>(
+    () => ({
+      q: debouncedQuery,
+      country: filters.country,
+      source: filters.source,
+      tech: filters.tech,
+      verdict: filters.verdict,
+      showExpired: filters.showExpired,
+      sortBy: filters.sortBy,
+      sortDir: filters.sortDir,
+    }),
+    [
+      debouncedQuery,
+      filters.country,
+      filters.source,
+      filters.tech,
+      filters.verdict,
+      filters.showExpired,
+      filters.sortBy,
+      filters.sortDir,
+    ],
+  );
+
+  // Helper to merge tenders into fallback lookup map
+  const cacheTenders = useCallback((items: TenderWithIntelligence[]) => {
+    if (items.length === 0) return;
+    setTenderCache((prev) => {
+      const next = { ...prev };
+      for (const item of items) {
+        next[item.id] = item;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Filter state
-  const [search, setSearch] = useState("");
-  const [countryFilter, setCountryFilter] = useState("ALL");
-  const [techFilter, setTechFilter] = useState<string | null>(null);
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
-  const [showExpired, setShowExpired] = useState(false);
-
-  // Watchlist
-  const [bookmarks, setBookmarks] = useState<Set<string>>(new Set());
-
-  // Detail panel
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = tenders.find((t) => t.id === selectedId) ?? null;
-
-  // Watchlist view toggle
-  const [watchlistOnly, setWatchlistOnly] = useState(false);
-
-  // Filtered tenders
-  const filtered = useMemo(() => {
-    let result = [...tenders];
-
-    // Watchlist
-    if (watchlistOnly) {
-      result = result.filter((t) => bookmarks.has(t.id));
-    }
-
-    // Search
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      result = result.filter(
-        (t) =>
-          t.title.toLowerCase().includes(q) ||
-          t.authority.toLowerCase().includes(q),
-      );
-    }
-
-    // Country
-    if (countryFilter !== "ALL") {
-      result = result.filter((t) => t.country === countryFilter);
-    }
-
-    // Tech
-    if (techFilter) {
-      result = result.filter((t) =>
-        t.technologies.some(
-          (tech) => tech.toLowerCase() === techFilter.toLowerCase(),
-        ),
-      );
-    }
-
-    // Show/hide expired
-    if (!showExpired) {
-      result = result.filter((t) => daysUntil(t.deadline) >= 0);
-    }
-
-    // Sort by deadline
-    result.sort((a, b) => {
-      const diff =
-        new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
-      return sortDir === "asc" ? diff : -diff;
-    });
-
-    return result;
-  }, [tenders, search, countryFilter, techFilter, sortDir, showExpired, bookmarks, watchlistOnly]);
-
-  // KPIs from filtered data
-  const activeCount = filtered.filter((t) => daysUntil(t.deadline) >= 0).length;
-  const budgetTotal = totalBudget(filtered);
-  const topTech = topTechFor(filtered);
-
-  const toggleBookmark = useCallback((id: string) => {
-    setBookmarks((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
       return next;
     });
   }, []);
 
+  /* ── Watchlist Persistence (Hydration-Safe) ──────────────────────────── */
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      try {
+        const raw = window.localStorage.getItem(WATCHLIST_STORAGE_KEY);
+        if (raw) {
+          const parsed: unknown = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const validIds = parsed.filter(
+              (entry): entry is string =>
+                typeof entry === "string" && entry.trim().length > 0,
+            );
+            if (validIds.length > 0) {
+              setBookmarks(new Set(validIds));
+            }
+          }
+        }
+      } catch {
+        // Ignore storage read errors in restricted browsing contexts
+      } finally {
+        watchlistHydratedRef.current = true;
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!watchlistHydratedRef.current) return;
+    try {
+      window.localStorage.setItem(
+        WATCHLIST_STORAGE_KEY,
+        JSON.stringify(Array.from(bookmarks)),
+      );
+    } catch {
+      // Ignore quota / private-mode write errors
+    }
+  }, [bookmarks]);
+
+  /* ── Debounce Free-Text Search (180ms) ───────────────────────────────── */
+
+  useEffect(() => {
+    const delay = filters.q.length === 0 ? 0 : SEARCH_DEBOUNCE_MS;
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(filters.q);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [filters.q]);
+
+  /* ── Fetch GET /api/analytics (Mount & Post-Sync) ────────────────────── */
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadAnalytics() {
+      setAnalyticsLoading(true);
+      setAnalyticsError(null);
+      try {
+        const res = await fetch("/api/analytics", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          throw new Error(`Analytics request failed (HTTP ${res.status})`);
+        }
+        const payload: AnalyticsResponse = await res.json();
+        if (!controller.signal.aborted) {
+          setAnalytics(payload);
+          setDataSource(payload.dataSource);
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof Error ? err.message : "Unable to load analytics";
+        setAnalyticsError(message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setAnalyticsLoading(false);
+        }
+      }
+    }
+
+    void loadAnalytics();
+
+    return () => {
+      controller.abort();
+    };
+  }, [refreshTick]);
+
+  /* ── Fetch GET /api/tenders (Server-Side Filtered & Sorted) ──────────── */
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const queryString = buildTendersQueryParams(serverFilters);
+    const defaultSet = isDefaultServerFilterSet(serverFilters);
+
+    async function loadTenders() {
+      setDeskLoading(true);
+      setDeskError(null);
+      try {
+        const res = await fetch(`/api/tenders?${queryString}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          throw new Error(`Tenders request failed (HTTP ${res.status})`);
+        }
+        const payload: TendersApiResponse = await res.json();
+        if (!controller.signal.aborted) {
+          setDeskTenders(payload.tenders);
+          setFacets(payload.facets);
+          setTotalCount(payload.totalCount);
+          setDataSource(payload.dataSource);
+          cacheTenders(payload.tenders);
+          if (defaultSet) {
+            setOverviewTenders(payload.tenders);
+          }
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof Error ? err.message : "Unable to load tenders";
+        setDeskError(message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setDeskLoading(false);
+        }
+      }
+    }
+
+    void loadTenders();
+
+    return () => {
+      controller.abort();
+    };
+  }, [serverFilters, refreshTick, cacheTenders]);
+
+  /* ── Refresh Unfiltered Overview Snapshot After Sync When Filtered ───── */
+
+  const refreshOverviewSnapshot = useCallback(async () => {
+    try {
+      const res = await fetch("/api/tenders?sortBy=score&sortDir=desc", {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const payload: TendersApiResponse = await res.json();
+      setOverviewTenders(payload.tenders);
+      setDataSource(payload.dataSource);
+      cacheTenders(payload.tenders);
+    } catch {
+      // Non-fatal; existing overview snapshot remains intact
+    }
+  }, [cacheTenders]);
+
+  const handleAfterSync = useCallback(async () => {
+    setRefreshTick((tick) => tick + 1);
+    if (!isDefaultServerFilterSet(serverFilters)) {
+      await refreshOverviewSnapshot();
+    }
+  }, [serverFilters, refreshOverviewSnapshot]);
+
+  /* ── Global Keyboard Shortcuts (`/` & `Escape`) ──────────────────────── */
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        if (selectedTenderId !== null) {
+          event.preventDefault();
+          setSelectedTenderId(null);
+        }
+        return;
+      }
+
+      if (
+        event.key === "/" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isEditableElement(event.target)
+      ) {
+        event.preventDefault();
+        if (selectedTenderId !== null) {
+          setSelectedTenderId(null);
+        }
+        if (activeTab === "desk") {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        } else {
+          pendingSearchFocusRef.current = true;
+          setActiveTab("desk");
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeTab, selectedTenderId]);
+
+  useEffect(() => {
+    if (activeTab === "desk" && pendingSearchFocusRef.current) {
+      pendingSearchFocusRef.current = false;
+      requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      });
+    }
+  }, [activeTab]);
+
+  /* ── Interaction Handlers ────────────────────────────────────────────── */
+
+  const handleFiltersChange = useCallback(
+    (
+      updater:
+        | Partial<TenderDeskFilters>
+        | ((prev: TenderDeskFilters) => TenderDeskFilters),
+    ) => {
+      setFilters((prev) =>
+        typeof updater === "function" ? updater(prev) : { ...prev, ...updater },
+      );
+    },
+    [],
+  );
+
+  const handleResetFilters = useCallback(() => {
+    setFilters(DEFAULT_FILTERS);
+    setDebouncedQuery("");
+  }, []);
+
+  const handleToggleBookmark = useCallback((id: string) => {
+    setBookmarks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleDrawerToggleBookmark = useCallback(
+    (maybeId?: unknown) => {
+      const targetId =
+        typeof maybeId === "string" && maybeId.length > 0
+          ? maybeId
+          : selectedTenderId;
+      if (targetId) {
+        handleToggleBookmark(targetId);
+      }
+    },
+    [selectedTenderId, handleToggleBookmark],
+  );
+
+  const handleSelectTender = useCallback(
+    (tenderOrId: string | TenderWithIntelligence) => {
+      if (typeof tenderOrId === "string") {
+        setSelectedTenderId(tenderOrId);
+      } else {
+        setTenderCache((prev) => ({ ...prev, [tenderOrId.id]: tenderOrId }));
+        setSelectedTenderId(tenderOrId.id);
+      }
+    },
+    [],
+  );
+
+  const handleCloseDrawer = useCallback(() => {
+    setSelectedTenderId(null);
+  }, []);
+
+  const handleNavigateToDesk = useCallback(
+    (preset?: DeskNavigationPreset) => {
+      if (preset && Object.keys(preset).length > 0) {
+        const resolvedSectorQuery =
+          preset.q === undefined && preset.sector
+            ? (analytics?.bySector.find((s) => s.division === preset.sector)
+                ?.label ?? preset.sector)
+            : preset.q;
+
+        setFilters({
+          ...DEFAULT_FILTERS,
+          ...(preset.country !== undefined ? { country: preset.country } : {}),
+          ...(preset.tech !== undefined ? { tech: preset.tech } : {}),
+          ...(preset.verdict !== undefined ? { verdict: preset.verdict } : {}),
+          ...(preset.source !== undefined ? { source: preset.source } : {}),
+          ...(resolvedSectorQuery !== undefined
+            ? { q: resolvedSectorQuery }
+            : {}),
+          ...(preset.watchlistOnly !== undefined
+            ? { watchlistOnly: preset.watchlistOnly }
+            : {}),
+          ...(preset.showExpired !== undefined
+            ? { showExpired: preset.showExpired }
+            : {}),
+        });
+        setDebouncedQuery(resolvedSectorQuery ?? "");
+      }
+      setActiveTab("desk");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [analytics],
+  );
+
+  const handleFilterByCountry = useCallback(
+    (country: string) => {
+      handleNavigateToDesk({ country });
+    },
+    [handleNavigateToDesk],
+  );
+
+  const handleWatchlistToggle = useCallback(() => {
+    if (activeTab === "desk") {
+      setFilters((prev) => ({ ...prev, watchlistOnly: !prev.watchlistOnly }));
+    } else {
+      setFilters((prev) => ({ ...prev, watchlistOnly: true }));
+      setActiveTab("desk");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [activeTab]);
+
+  const handleManualRetry = useCallback(() => {
+    setRefreshTick((tick) => tick + 1);
+  }, []);
+
+  /* ── Derived View Data ───────────────────────────────────────────────── */
+
+  const visibleDeskTenders = useMemo(() => {
+    const base =
+      deskTenders.length > 0 || !deskError ? deskTenders : overviewTenders;
+    if (!filters.watchlistOnly) return base;
+    return base.filter((t) => bookmarks.has(t.id));
+  }, [deskTenders, deskError, overviewTenders, filters.watchlistOnly, bookmarks]);
+
+  const selectedFallbackTender = useMemo<TenderWithIntelligence | null>(() => {
+    if (!selectedTenderId) return null;
+    return (
+      deskTenders.find((t) => t.id === selectedTenderId) ??
+      overviewTenders.find((t) => t.id === selectedTenderId) ??
+      tenderCache[selectedTenderId] ??
+      null
+    );
+  }, [selectedTenderId, deskTenders, overviewTenders, tenderCache]);
+
+  const activeTenderCount = useMemo<number | null>(() => {
+    if (analytics) return analytics.kpis.activeTenders;
+    if (totalCount > 0) return totalCount;
+    if (overviewTenders.length > 0) return overviewTenders.length;
+    return null;
+  }, [analytics, totalCount, overviewTenders.length]);
+
+  const initialShellLoading =
+    analyticsLoading && analytics === null && deskLoading && overviewTenders.length === 0;
+
+  const activeError =
+    activeTab === "desk"
+      ? deskError
+      : activeTab === "overview"
+        ? analyticsError ?? deskError
+        : analyticsError;
+
+  /* ── Render ──────────────────────────────────────────────────────────── */
+
   return (
-    <div className="mx-auto max-w-7xl px-6 py-10">
-      {/* Header */}
-      <header className="mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight font-[family-name:var(--font-serif)]">
-              GovTender Intelligence
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              EU &amp; DACH Procurement Analytics — Real-time tender intelligence
-              with predictive winner matching
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {/* Live status badge */}
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              {loading ? (
-                <>
-                  <Loader2 className="h-3 w-3 animate-spin" /> Loading…
-                </>
-              ) : (
-                <>
-                  <span className={`h-2 w-2 rounded-full ${dataSource === "api" ? "bg-green-500" : "bg-amber-500"}`} />
-                  {dataSource === "api" ? "Live data" : "Sample data"}
-                </>
-              )}
-            </span>
-            <button
-              onClick={() => setWatchlistOnly((v) => !v)}
-              className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-lg border transition-colors ${
-                watchlistOnly
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "border-border hover:bg-muted text-foreground"
-              }`}
-            >
-              <Users className="h-4 w-4" />
-              Watchlist ({bookmarks.size})
-            </button>
-          </div>
-        </div>
-        <div className="mt-4 h-px bg-border" />
-      </header>
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <AppHeader
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        activeTenderCount={activeTenderCount}
+        dataSource={dataSource}
+        loading={initialShellLoading}
+        watchlistCount={bookmarks.size}
+        watchlistActive={activeTab === "desk" && filters.watchlistOnly}
+        onWatchlistToggle={handleWatchlistToggle}
+      />
 
-      {/* KPI strip */}
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        <KpiCard
-          label="Active Tenders (DACH)"
-          value={String(activeCount)}
-          sub={`of ${filtered.length} matching your filters`}
-          icon={Activity}
-        />
-        <KpiCard
-          label="Total Budget Volume"
-          value={budgetTotal}
-          sub="EUR-denominated matching tenders"
-          icon={TrendingUp}
-        />
-        <KpiCard
-          label="Top Tech Requirement"
-          value={topTech || "—"}
-          sub={filtered.length > 0 ? "most frequent in filtered set" : "no tenders match"}
-          icon={Layers}
-        />
-      </section>
-
-      {/* Filters bar */}
-      <section className="mb-4 space-y-3">
-        {/* Search + Country pills + toggles */}
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Search */}
-          <div className="relative flex-1 min-w-[240px] max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search tenders by title or authority…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-8 py-2 text-sm rounded-lg border border-border bg-card placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/20 focus:border-primary/30"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted"
-              >
-                <X className="h-3.5 w-3.5 text-muted-foreground" />
-              </button>
-            )}
-          </div>
-
-          {/* Country pills */}
-          <div className="flex items-center gap-1">
-            {COUNTRIES.map((c) => (
-              <button
-                key={c.code}
-                onClick={() => setCountryFilter(c.code)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  countryFilter === c.code
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted border border-border"
-                }`}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Show expired toggle */}
-          <button
-            onClick={() => setShowExpired((v) => !v)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-              showExpired
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted border border-border"
-            }`}
+      <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-7 sm:px-6 lg:px-8">
+        {activeError && (
+          <div
+            role="alert"
+            className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-md border border-crimson/25 bg-crimson-soft px-4 py-2.5 text-xs text-crimson"
           >
-            Show Expired
-          </button>
-        </div>
-
-        {/* Tech tag filter */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-muted-foreground uppercase tracking-wider">
-            Filter by tech:
-          </span>
-          {allTechnologies().map((tech) => (
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>{activeError}</span>
+            </div>
             <button
-              key={tech}
-              onClick={() => setTechFilter((prev) => (prev === tech ? null : tech))}
-              className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                techFilter === tech
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10"
-              }`}
+              type="button"
+              onClick={handleManualRetry}
+              className="inline-flex items-center gap-1.5 rounded-[4px] border border-crimson/30 bg-card px-2.5 py-1 text-[11px] font-medium text-crimson transition-colors hover:bg-crimson/10"
             >
-              {tech}
-            </button>
-          ))}
-          {techFilter && (
-            <button
-              onClick={() => setTechFilter(null)}
-              className="text-xs text-muted-foreground hover:text-foreground underline"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-
-        {/* Active filter summary */}
-        {(search || countryFilter !== "ALL" || techFilter || watchlistOnly) && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>
-              Showing {filtered.length} of {tenders.length} tenders
-            </span>
-            <button
-              onClick={() => {
-                setSearch("");
-                setCountryFilter("ALL");
-                setTechFilter(null);
-                setWatchlistOnly(false);
-                setShowExpired(false);
-              }}
-              className="underline hover:text-foreground"
-            >
-              Reset all filters
+              <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              Retry
             </button>
           </div>
         )}
-      </section>
 
-      {/* Intelligence Table */}
-      <section className="mb-6">
-        <Card>
-          <CardHeader className="pb-3 flex flex-row items-center justify-between">
-            <CardTitle>Active Procurement Notices</CardTitle>
-            <button
-              onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md text-muted-foreground hover:bg-muted transition-colors"
-            >
-              <ArrowUpDown className="h-3 w-3" />
-              Deadline {sortDir === "asc" ? "↑" : "↓"}
-            </button>
-          </CardHeader>
-          <CardContent className="p-0">
-            {filtered.length === 0 ? (
-              <div className="px-6 py-12 text-center text-sm text-muted-foreground">
-                No tenders match your current filters.
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-b border-border bg-muted/30 hover:bg-muted/30">
-                    <TableHead className="w-10" />
-                    <TableHead>Awarding Authority</TableHead>
-                    <TableHead>Project Title</TableHead>
-                    <TableHead>Budget</TableHead>
-                    <TableHead>Deadline</TableHead>
-                    <TableHead>Technologies</TableHead>
-                    <TableHead className="w-10" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((t) => (
-                    <TenderRow
-                      key={t.id}
-                      t={t}
-                      isBookmarked={bookmarks.has(t.id)}
-                      onToggleBookmark={() => toggleBookmark(t.id)}
-                      onSelect={() => setSelectedId(t.id)}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      </section>
+        <div key={activeTab} className="animate-fade-in">
+          {activeTab === "overview" && (
+            <ExecutiveOverview
+              analytics={analytics}
+              tenders={overviewTenders}
+              loading={analyticsLoading && analytics === null}
+              onSelectTender={handleSelectTender}
+              onNavigateToDesk={handleNavigateToDesk}
+            />
+          )}
 
-      {/* Footer */}
-      <footer className="text-center text-xs text-muted-foreground pb-6">
-        GovTender AI — Intelligence Dashboard &middot; Data refreshes daily
-        &middot; Predictions based on deterministic CPV matching
+          {activeTab === "desk" && (
+            <TenderDesk
+              tenders={visibleDeskTenders}
+              facets={facets}
+              totalCount={totalCount}
+              loading={deskLoading}
+              filters={filters}
+              onFiltersChange={handleFiltersChange}
+              onResetFilters={handleResetFilters}
+              bookmarks={bookmarks}
+              onToggleBookmark={handleToggleBookmark}
+              onSelectTender={handleSelectTender}
+              searchInputRef={searchInputRef}
+            />
+          )}
+
+          {activeTab === "radar" && (
+            <CompetitiveRadar
+              analytics={analytics}
+              loading={analyticsLoading && analytics === null}
+              onFilterByCountry={handleFilterByCountry}
+            />
+          )}
+
+          {activeTab === "ops" && (
+            <PipelineOpsView
+              analytics={analytics}
+              dataSource={dataSource}
+              onAfterSync={handleAfterSync}
+            />
+          )}
+        </div>
+      </main>
+
+      <footer className="mt-12 border-t border-border bg-card/60">
+        <div className="mx-auto flex max-w-[1400px] flex-col items-center justify-between gap-2 px-4 py-4 text-xs text-subtle-foreground sm:flex-row sm:px-6 lg:px-8">
+          <p className="text-center sm:text-left">
+            GovTender Intelligence &middot; Deterministic OCDS &amp; CPV Engine
+            &middot; Non-LLM-First Architecture
+          </p>
+          <div className="hidden items-center gap-3 font-mono text-[11px] text-subtle-foreground sm:flex">
+            <span className="inline-flex items-center gap-1">
+              <kbd className="rounded-[3px] border border-border bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                /
+              </kbd>
+              <span>Search Desk</span>
+            </span>
+            <span className="text-border-strong" aria-hidden="true">
+              &middot;
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <kbd className="rounded-[3px] border border-border bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                Esc
+              </kbd>
+              <span>Close Dossier</span>
+            </span>
+          </div>
+        </div>
       </footer>
 
-      {/* Detail Panel Overlay */}
-      {selected && (
-        <DetailPanel
-          tender={selected}
-          isOpen={true}
-          onClose={() => setSelectedId(null)}
-          isBookmarked={bookmarks.has(selected.id)}
-          onToggleBookmark={() => toggleBookmark(selected.id)}
+      {selectedTenderId && (
+        <TenderDossierDrawer
+          tenderId={selectedTenderId}
+          fallbackTender={selectedFallbackTender}
+          isBookmarked={bookmarks.has(selectedTenderId)}
+          onToggleBookmark={handleDrawerToggleBookmark}
+          onClose={handleCloseDrawer}
+          onSelectTender={handleSelectTender}
         />
       )}
     </div>

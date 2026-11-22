@@ -57,6 +57,13 @@ export interface OcdsOrganization {
   contactPoint?: { email?: string; url?: string };
 }
 
+export interface OcdsDocument {
+  id?: string;
+  url?: string;
+  title?: string;
+  documentType?: string;
+}
+
 export interface OcdsTender {
   id?: string;
   title?: string;
@@ -67,6 +74,7 @@ export interface OcdsTender {
   tenderPeriod?: OcdsPeriod;
   procurementMethod?: string;
   procuringEntity?: { id?: string; name?: string };
+  documents?: OcdsDocument[];
 }
 
 export interface OcdsAward {
@@ -78,6 +86,7 @@ export interface OcdsAward {
   value?: OcdsValue;
   items?: OcdsItem[];
   suppliers?: { id?: string; name?: string }[];
+  documents?: OcdsDocument[];
 }
 
 export type OcdsTag =
@@ -98,6 +107,8 @@ export interface OcdsRelease {
   id: string;
   date?: string;
   tag?: OcdsTag[];
+  url?: string;
+  sourceUrl?: string;
   tender?: OcdsTender;
   awards?: OcdsAward[];
   parties?: OcdsOrganization[];

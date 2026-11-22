@@ -22,7 +22,44 @@ import { env } from "./env.js";
  *                                          ──►  typed result
  */
 
-const client = new Mistral({ apiKey: env.mistralApiKey });
+let client: Mistral | null = null;
+function getClient(): Mistral {
+  if (!client) client = new Mistral({ apiKey: env.mistralApiKey });
+  return client;
+}
+
+/**
+ * Race a promise against an abortable timeout. Always clears its timer when
+ * the underlying promise settles, and aborts the controller + rejects cleanly
+ * if `timeoutMs` elapses first (even if the wrapped promise ignores `signal`).
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number | undefined,
+  controller: AbortController,
+): Promise<T> {
+  if (timeoutMs === undefined) return promise;
+
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err = new Error(`Extraction timed out after ${timeoutMs}ms`);
+      err.name = "AbortError";
+      controller.abort(err);
+      reject(err);
+    }, Math.max(0, timeoutMs));
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /** Builds the system prompt that constrains the model to our schema. */
 function buildSystemPrompt(): string {
@@ -91,28 +128,50 @@ function safeJsonParse(raw: string): unknown {
   throw new Error("Model response was not valid JSON and could not be repaired.");
 }
 
+export interface ExtractClientLike {
+  chat: {
+    complete: Mistral["chat"]["complete"];
+  };
+}
+
+export type ExtractCallFn = (
+  text: string,
+  opts: { repairHint?: string; signal: AbortSignal },
+) => Promise<string>;
+
 /**
  * One attempt at extraction. Returns parsed-but-unvalidated JSON so the caller
  * can decide whether to validate, repair, or retry.
  */
 async function callMistral(
   text: string,
-  opts: { repairHint?: string } = {},
+  opts: {
+    repairHint?: string;
+    signal: AbortSignal;
+    clientOverride?: ExtractClientLike;
+  },
 ): Promise<string> {
   const userMessage = opts.repairHint
     ? `Previous output failed validation: ${opts.repairHint}\n\nReturn a corrected JSON object only.\n\n--- DOCUMENT ---\n${text}`
     : `--- DOCUMENT ---\n${text}`;
 
-  const response = await client.chat.complete({
-    model: env.mistralModel,
-    // `json` response format forces the model to emit syntactically valid JSON.
-    responseFormat: { type: "json_object" },
-    temperature: 0, // deterministic extraction
-    messages: [
-      { role: "system", content: buildSystemPrompt() },
-      { role: "user", content: userMessage },
-    ],
-  });
+  const mistral = opts.clientOverride ?? getClient();
+  const response = await mistral.chat.complete(
+    {
+      model: env.mistralModel,
+      // `json` response format forces the model to emit syntactically valid JSON.
+      responseFormat: { type: "json_object" },
+      temperature: 0, // deterministic extraction
+      messages: [
+        { role: "system", content: buildSystemPrompt() },
+        { role: "user", content: userMessage },
+      ],
+    },
+    {
+      signal: opts.signal,
+      fetchOptions: { signal: opts.signal },
+    },
+  );
 
   const content = response.choices?.[0]?.message?.content;
   if (typeof content !== "string" || content.trim() === "") {
@@ -129,6 +188,10 @@ export interface ExtractTenderOptions {
   maxAttempts?: number;
   /** Abort the underlying HTTP request after this many ms. */
   timeoutMs?: number;
+  /** Optional low-level call override for unit testing timeout/retry without network calls. */
+  callFn?: ExtractCallFn;
+  /** Optional Mistral-compatible client override for unit testing without network calls. */
+  clientOverride?: ExtractClientLike;
 }
 
 export interface ExtractTenderResult {
@@ -161,12 +224,21 @@ export async function extractTender(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
-    const timer = options.timeoutMs
-      ? setTimeout(() => controller.abort(), options.timeoutMs)
-      : undefined;
 
     try {
-      const rawResponse = await callMistral(rawText, { repairHint });
+      const callPromise = options.callFn
+        ? options.callFn(rawText, { repairHint, signal: controller.signal })
+        : callMistral(rawText, {
+            repairHint,
+            signal: controller.signal,
+            clientOverride: options.clientOverride,
+          });
+
+      const rawResponse = await withTimeout(
+        callPromise,
+        options.timeoutMs,
+        controller,
+      );
       const parsed = safeJsonParse(rawResponse);
       const result = TenderExtractionSchema.safeParse(parsed);
 
@@ -181,10 +253,8 @@ export async function extractTender(
         .join("; ");
     } catch (err) {
       lastError = err;
-      // Network / parse error: no structured hint, but retry once more.
+      // Network / timeout / parse error: feed error message into next attempt.
       repairHint = err instanceof Error ? err.message : "unknown error";
-    } finally {
-      if (timer) clearTimeout(timer);
     }
   }
 

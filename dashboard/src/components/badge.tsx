@@ -1,24 +1,38 @@
 import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/cn";
 
-export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
-  variant?: "default" | "muted";
-}
+const badgeVariants = cva(
+  "inline-flex items-center gap-1.5 rounded-[4px] border px-2 py-0.5 text-[11px] font-medium leading-4 tracking-[0.01em] whitespace-nowrap transition-colors",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary/[0.06] text-primary border-primary/15",
+        muted: "bg-muted text-muted-foreground border-border",
+        cobalt: "bg-accent-blue-soft text-accent-blue border-accent-blue/20",
+        emerald: "bg-emerald-soft text-emerald border-emerald/20",
+        amber: "bg-amber-soft text-amber border-amber/20",
+        crimson: "bg-crimson-soft text-crimson border-crimson/20",
+        outline: "bg-card text-foreground border-border-strong",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  },
+);
 
-function Badge({ className, variant = "default", ...props }: BadgeProps) {
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLSpanElement>,
+    VariantProps<typeof badgeVariants> {}
+
+function Badge({ className, variant, ...props }: BadgeProps) {
   return (
-    <div
-      className={cn(
-        "inline-flex items-center rounded px-2 py-0.5 text-xs font-medium",
-        variant === "default" &&
-          "bg-primary/5 text-primary border border-primary/10",
-        variant === "muted" &&
-          "bg-muted text-muted-foreground border border-border",
-        className,
-      )}
+    <span
+      className={cn(badgeVariants({ variant }), className)}
       {...props}
     />
   );
 }
 
-export { Badge };
+export { Badge, badgeVariants };

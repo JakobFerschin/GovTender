@@ -1,33 +1,56 @@
 import * as React from "react";
 import { cn } from "@/lib/cn";
 
-const Table = React.forwardRef<
-  HTMLTableElement,
-  React.HTMLAttributes<HTMLTableElement>
->(({ className, ...props }, ref) => (
-  <div className="w-full overflow-auto">
-    <table
-      ref={ref}
-      className={cn("w-full caption-bottom text-sm", className)}
-      {...props}
-    />
-  </div>
-));
+export interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
+  containerClassName?: string;
+}
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(
+  ({ className, containerClassName, ...props }, ref) => (
+    <div className={cn("relative w-full overflow-x-auto", containerClassName)}>
+      <table
+        ref={ref}
+        className={cn(
+          "w-full border-collapse caption-bottom text-[13px] leading-5",
+          className,
+        )}
+        {...props}
+      />
+    </div>
+  ),
+);
 Table.displayName = "Table";
 
-const TableHeader = React.forwardRef<
-  HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
-  <thead ref={ref} className={cn("", className)} {...props} />
-));
+export interface TableHeaderProps
+  extends React.HTMLAttributes<HTMLTableSectionElement> {
+  sticky?: boolean;
+}
+
+const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
+  ({ className, sticky = false, ...props }, ref) => (
+    <thead
+      ref={ref}
+      className={cn(
+        "bg-background/90 [&_tr]:border-b [&_tr]:border-border",
+        sticky &&
+          "sticky top-0 z-10 bg-background/95 backdrop-blur-[2px] shadow-[inset_0_-1px_0_var(--border)]",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
 TableHeader.displayName = "TableHeader";
 
 const TableBody = React.forwardRef<
   HTMLTableSectionElement,
   React.HTMLAttributes<HTMLTableSectionElement>
 >(({ className, ...props }, ref) => (
-  <tbody ref={ref} className={cn("[&_tr:last-child]:border-0", className)} {...props} />
+  <tbody
+    ref={ref}
+    className={cn("bg-card [&_tr:last-child]:border-0", className)}
+    {...props}
+  />
 ));
 TableBody.displayName = "TableBody";
 
@@ -38,7 +61,7 @@ const TableRow = React.forwardRef<
   <tr
     ref={ref}
     className={cn(
-      "border-b border-border transition-colors hover:bg-muted/50",
+      "border-b border-border/80 transition-colors duration-100 hover:bg-[#F3F5F8] data-[state=selected]:bg-accent-blue-soft/60",
       className,
     )}
     {...props}
@@ -53,7 +76,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-10 px-4 text-left align-middle font-medium text-muted-foreground text-xs uppercase tracking-wider",
+      "h-9 px-3.5 text-left align-middle text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground whitespace-nowrap select-none [&:has([role=checkbox])]:pr-0",
       className,
     )}
     {...props}
@@ -68,7 +91,7 @@ const TableCell = React.forwardRef<
   <td
     ref={ref}
     className={cn(
-      "p-4 align-middle text-foreground",
+      "px-3.5 py-3 align-middle text-foreground [&:has([role=checkbox])]:pr-0",
       className,
     )}
     {...props}

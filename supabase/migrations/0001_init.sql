@@ -72,9 +72,30 @@ create table if not exists public.companies (
   external_ids     jsonb not null default '{}'::jsonb,  -- { "ted_org_id": "..." }
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
-  constraint companies_unique unique (name_normalized, country)
+  constraint companies_unique unique nulls not distinct (name_normalized, country)
 );
 
+-- Upgrade existing installations where companies_unique was created without NULLS NOT DISTINCT
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint c
+    join pg_class t on t.oid = c.conrelid
+    join pg_namespace n on n.oid = t.relnamespace
+    join pg_index i on i.indexrelid = c.conindid
+    where n.nspname = 'public'
+      and t.relname = 'companies'
+      and c.conname = 'companies_unique'
+      and not i.indnullsnotdistinct
+  ) then
+    alter table public.companies drop constraint companies_unique;
+    alter table public.companies
+      add constraint companies_unique unique nulls not distinct (name_normalized, country);
+  end if;
+end $$;
+
+drop trigger if exists trg_companies_updated_at on public.companies;
 create trigger trg_companies_updated_at
   before update on public.companies
   for each row execute function public.set_updated_at();
@@ -131,6 +152,7 @@ create table if not exists public.tenders (
   constraint tenders_source_unique unique (source, source_id)
 );
 
+drop trigger if exists trg_tenders_updated_at on public.tenders;
 create trigger trg_tenders_updated_at
   before update on public.tenders
   for each row execute function public.set_updated_at();
@@ -201,6 +223,7 @@ create table if not exists public.historical_awards (
   constraint historical_awards_source_unique unique (source, source_id)
 );
 
+drop trigger if exists trg_historical_awards_updated_at on public.historical_awards;
 create trigger trg_historical_awards_updated_at
   before update on public.historical_awards
   for each row execute function public.set_updated_at();
@@ -296,12 +319,15 @@ alter table public.companies         enable row level security;
 alter table public.tenders           enable row level security;
 alter table public.historical_awards enable row level security;
 
+drop policy if exists "companies are publicly readable" on public.companies;
 create policy "companies are publicly readable"
   on public.companies for select using (true);
 
+drop policy if exists "tenders are publicly readable" on public.tenders;
 create policy "tenders are publicly readable"
   on public.tenders for select using (true);
 
+drop policy if exists "historical awards are publicly readable" on public.historical_awards;
 create policy "historical awards are publicly readable"
   on public.historical_awards for select using (true);
 

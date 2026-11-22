@@ -47,6 +47,8 @@ export interface PipelineOptions extends EnhanceOptions {
   dryRun?: boolean;
   /** Injected client; if omitted, the default Supabase client is built lazily. */
   supabase?: SupabaseClient;
+  /** Source platform identifier propagated to `mapRelease` (e.g. "ted", "simap", "evergabe"). */
+  source?: string;
 }
 
 export interface PipelineResult {
@@ -69,11 +71,8 @@ export async function ingestRelease(
   options: PipelineOptions = {},
 ): Promise<PipelineResult> {
   try {
-    // (1)+(2) Deterministic parse.
-    const { tender, awards } = mapRelease(release);
-
-    let techSource: PipelineResult["techSource"] = "none";
-    let technologies: string[] = [];
+    // (1)+(2) Deterministic parse (propagating source identifier).
+    const { tender, awards } = mapRelease(release, { source: options.source });
 
     if (!tender && awards.length === 0) {
       return {
@@ -86,49 +85,77 @@ export async function ingestRelease(
       };
     }
 
-    if (tender && !options.dryRun) {
-      // (3) Conditional LLM enhancement — only fills technologies if empty.
-      const enhanced = await enhanceTechnologies(
-        [], // OCDS carries no technologies deterministically
-        tender.description,
-        options,
-      ).catch((err): { required_technologies: string[]; source: "none" } => {
-        console.warn("[pipeline] enhancement failed, degrading:", err);
-        return { required_technologies: [], source: "none" };
-      });
-      technologies = enhanced.required_technologies;
-      techSource = enhanced.source;
+    let techSource: PipelineResult["techSource"] = "none";
+    let technologies: string[] = [];
 
-      // (4) Persist.
-      const id = await persistTender(
+    if (tender) {
+      const existingTechs = tender.required_technologies ?? [];
+      if (options.dryRun) {
+        // Dry-run path: report deterministic technologies without LLM or DB writes.
+        technologies = existingTechs;
+        techSource = existingTechs.length > 0 ? "deterministic" : "none";
+      } else {
+        // (3) Conditional LLM enhancement — returns "deterministic" immediately
+        // if mapRelease already populated technologies, else invokes LLM fallback.
+        const enhanced = await enhanceTechnologies(
+          existingTechs,
+          tender.description,
+          options,
+        ).catch(
+          (
+            err,
+          ): {
+            required_technologies: string[];
+            source: "deterministic" | "none";
+          } => {
+            console.warn("[pipeline] enhancement failed, degrading:", err);
+            return {
+              required_technologies: existingTechs,
+              source: existingTechs.length > 0 ? "deterministic" : "none",
+            };
+          },
+        );
+        technologies = enhanced.required_technologies;
+        techSource = enhanced.source;
+      }
+    }
+
+    // Dry-run path: skip persistence, still report mapped data.
+    if (options.dryRun) {
+      return {
+        tenderId: null,
+        awardIds: [],
+        techSource,
+        technologies,
+        ok: true,
+        skipped: "dry run",
+      };
+    }
+
+    // (4) Persist tender (if present) and awards independently so award-only
+    // releases are always persisted even when `tender` is undefined.
+    let tenderId: string | null = null;
+    if (tender) {
+      tenderId = await persistTender(
         { ...tender, required_technologies: technologies },
         options.supabase,
       ).catch((err): null => {
         console.warn("[pipeline] tender persist failed:", err);
         return null;
       });
-
-      const awardIds: (string | null)[] = [];
-      for (const award of awards) {
-        awardIds.push(
-          options.dryRun
-            ? null
-            : await persistAward(award, options.supabase).catch((): null => null),
-        );
-      }
-
-      return { tenderId: id, awardIds, techSource, technologies, ok: true };
     }
 
-    // Dry-run path: skip persistence, still report mapped data.
-    return {
-      tenderId: null,
-      awardIds: [],
-      techSource,
-      technologies,
-      ok: true,
-      skipped: options.dryRun ? "dry run" : undefined,
-    };
+    const awardIds: (string | null)[] = [];
+    for (const award of awards) {
+      awardIds.push(
+        await persistAward(award, options.supabase).catch((err): null => {
+          console.warn("[pipeline] award persist failed:", err);
+          return null;
+        }),
+      );
+    }
+
+    return { tenderId, awardIds, techSource, technologies, ok: true };
   } catch (err) {
     // Truly unexpected — log and resolve, never throw.
     console.error("[pipeline] unexpected error:", err);

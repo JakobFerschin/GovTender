@@ -5,6 +5,12 @@
   "description": "Government Tender Analyzer — AI-driven extraction & predictive matching for EU/DACH public procurement.",
   "type": "module",
   "scripts": {
+    "test": "tsx src/tests/pipeline.e2e.ts && tsx src/tests/sources.test.ts && tsx src/tests/matching.test.ts",
+    "test:pipeline": "tsx src/tests/pipeline.e2e.ts",
+    "test:sources": "tsx src/tests/sources.test.ts",
+    "test:matching": "tsx src/tests/matching.test.ts",
+    "ingest": "tsx src/cli/ingest.ts",
+    "ingest:dry": "tsx src/cli/ingest.ts --dry-run --sandbox",
     "extract:demo": "tsx src/lib/extraction/demo.ts",
     "typecheck": "tsc --noEmit"
   },

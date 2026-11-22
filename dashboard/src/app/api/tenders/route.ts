@@ -1,38 +1,71 @@
 import { NextResponse } from "next/server";
-import { TENDERS } from "@/lib/mock-data";
+import { getTenders, parseBidVerdict } from "@/lib/server/data-service";
+import type { SortDirection, TenderQueryFilters, TenderSortField } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
+
+function parseSortBy(raw: string | null): TenderSortField | undefined {
+  if (raw === "deadline" || raw === "budget" || raw === "score") return raw;
+  return undefined;
+}
+
+function parseSortDir(raw: string | null): SortDirection | undefined {
+  if (raw === "asc" || raw === "desc") return raw;
+  return undefined;
+}
+
+function parseMinBudget(raw: string | null): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
 
 /**
  * GET /api/tenders
  *
- * Serves active tenders with their embedded historical matches. In production
- * this would query Supabase; for the MVP it returns the same dataset the UI
- * already renders, so the frontend can fetch() instead of importing the mock
- * module directly — leaving a clean swap point for a real DB later.
+ * Returns procurement notices enriched with deterministic CPV matching,
+ * incumbent winner predictions, 4-axis Bid Scorecards, and live facet counts.
+ * Connects to Supabase PostgREST when configured, cleanly falling back to the
+ * deterministic sandbox engine otherwise.
  *
  * Query params:
- *   ?country=DE        filter by ISO-3166 alpha-2
- *   ?q=kubernetes      full-text over title + authority
+ *   ?country=DE
+ *   ?q=kubernetes
+ *   ?tech=postgresql
+ *   ?source=ted
+ *   ?sector=72
+ *   ?verdict=STRONG%20BID|EVALUATE|PASS
+ *   ?showExpired=true|false
+ *   ?minBudget=1000000
+ *   ?sortBy=deadline|budget|score
+ *   ?sortDir=asc|desc
  */
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const country = searchParams.get("country");
-  const q = searchParams.get("q")?.toLowerCase().trim();
+  try {
+    const { searchParams } = new URL(request.url);
 
-  let result = [...TENDERS];
+    const filters: TenderQueryFilters = {
+      country: searchParams.get("country") ?? undefined,
+      q: searchParams.get("q") ?? undefined,
+      tech: searchParams.get("tech") ?? undefined,
+      source: searchParams.get("source") ?? undefined,
+      sector: searchParams.get("sector") ?? undefined,
+      verdict: parseBidVerdict(searchParams.get("verdict")),
+      showExpired: searchParams.get("showExpired") === "true",
+      minBudget: parseMinBudget(searchParams.get("minBudget")),
+      sortBy: parseSortBy(searchParams.get("sortBy")),
+      sortDir: parseSortDir(searchParams.get("sortDir")),
+    };
 
-  if (country && country !== "ALL") {
-    result = result.filter((t) => t.country === country);
+    const payload = await getTenders(filters);
+
+    return NextResponse.json(payload, {
+      status: 200,
+      headers: { "Cache-Control": "no-store" },
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to load tenders";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-  if (q) {
-    result = result.filter(
-      (t) =>
-        t.title.toLowerCase().includes(q) ||
-        t.authority.toLowerCase().includes(q),
-    );
-  }
-
-  return NextResponse.json({
-    count: result.length,
-    tenders: result,
-  });
 }

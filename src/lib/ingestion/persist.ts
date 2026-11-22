@@ -48,20 +48,23 @@ async function resolveCompanyId(
   name: string | undefined,
   country: string | undefined,
 ): Promise<string | null> {
-  if (!name) return null;
+  const trimmedName = name?.trim();
+  if (!trimmedName) return null;
+  const normalizedCountry = country?.trim().toLowerCase() || null;
+
   const { data, error } = await sb
     .from("companies")
     .upsert(
-      { name, country },
+      { name: trimmedName, country: normalizedCountry },
       { onConflict: "name_normalized,country", ignoreDuplicates: false },
     )
     .select("id")
     .maybeSingle();
   if (error) {
-    console.warn(`[persist] company upsert failed for "${name}":`, error.message);
+    console.warn(`[persist] company upsert failed for "${trimmedName}":`, error.message);
     return null;
   }
-  return data?.id ?? null;
+  return (data?.id as string | undefined) ?? null;
 }
 
 /** Upsert a single active tender. Returns the row id (or null on failure). */
@@ -79,6 +82,7 @@ export async function persistTender(
   const row = {
     source: record.source,
     source_id: record.source_id,
+    source_url: record.source_url ?? null,
     title: record.title,
     description: record.description ?? null,
     cpv_codes: record.cpv_codes,
@@ -89,8 +93,10 @@ export async function persistTender(
     currency: record.currency,
     publication_date: record.publication_date?.toISOString() ?? null,
     submission_deadline: record.submission_deadline?.toISOString() ?? null,
+    procedure: record.procedure ?? null,
     status: record.status,
     required_technologies: record.required_technologies ?? [],
+    raw_payload: record.raw_payload ?? null,
   };
 
   const { data, error } = await client
@@ -103,7 +109,7 @@ export async function persistTender(
     console.warn(`[persist] tender upsert failed (${record.source_id}):`, error.message);
     return null;
   }
-  return data?.id ?? null;
+  return (data?.id as string | undefined) ?? null;
 }
 
 /** Upsert a single historical award. */
@@ -121,6 +127,7 @@ export async function persistAward(
   const row = {
     source: record.source,
     source_id: record.source_id,
+    source_url: record.source_url ?? null,
     title: record.title,
     description: record.description ?? null,
     cpv_codes: record.cpv_codes,
@@ -131,6 +138,7 @@ export async function persistAward(
     contract_value: record.contract_value ?? null,
     currency: record.currency,
     award_date: toDateOnly(record.award_date),
+    raw_payload: record.raw_payload ?? null,
   };
 
   const { data, error } = await client
@@ -143,7 +151,7 @@ export async function persistAward(
     console.warn(`[persist] award upsert failed (${record.source_id}):`, error.message);
     return null;
   }
-  return data?.id ?? null;
+  return (data?.id as string | undefined) ?? null;
 }
 
 export interface IngestResult {
@@ -157,15 +165,83 @@ export interface IngestResult {
  */
 export async function persistMapped(
   records: { tenders: TenderRecord[]; awards: HistoricalAwardRecord[] },
+  sb?: SupabaseClient,
 ): Promise<IngestResult> {
   let tendersUpserted = 0;
   let awardsUpserted = 0;
 
   for (const t of records.tenders) {
-    if (await persistTender(t)) tendersUpserted++;
+    if (await persistTender(t, sb)) tendersUpserted++;
   }
   for (const a of records.awards) {
-    if (await persistAward(a)) awardsUpserted++;
+    if (await persistAward(a, sb)) awardsUpserted++;
   }
   return { tendersUpserted, awardsUpserted };
+}
+
+export interface IngestionRunRecord {
+  source: string;
+  status: "success" | "partial" | "error" | "running" | string;
+  releases_fetched?: number;
+  tenders_upserted?: number;
+  awards_upserted?: number;
+  errors?: unknown[];
+  error_message?: string | null;
+  duration_ms?: number | null;
+  started_at?: Date | string;
+  finished_at?: Date | string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Write ingestion telemetry to `ingestion_runs`. Completely fail-safe: logs a
+ * warning and returns `null` if Supabase is unconfigured or the insert fails,
+ * so telemetry never breaks an ingestion pipeline.
+ */
+export async function recordIngestionRun(
+  run: IngestionRunRecord,
+  sb?: SupabaseClient,
+): Promise<string | null> {
+  try {
+    const client = sb ?? getSupabase();
+    const toIso = (v: Date | string | undefined): string =>
+      v instanceof Date ? v.toISOString() : (v ?? new Date().toISOString());
+
+    const row: Record<string, unknown> = {
+      source: run.source,
+      status: run.status,
+      releases_fetched: run.releases_fetched ?? 0,
+      tenders_upserted: run.tenders_upserted ?? 0,
+      awards_upserted: run.awards_upserted ?? 0,
+      errors: run.errors ?? [],
+      error_message: run.error_message ?? null,
+      duration_ms: run.duration_ms ?? null,
+      started_at: toIso(run.started_at),
+      finished_at: toIso(run.finished_at),
+    };
+    if (run.metadata !== undefined) {
+      row.metadata = run.metadata;
+    }
+
+    const { data, error } = await client
+      .from("ingestion_runs")
+      .insert(row)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      console.warn(
+        `[persist] ingestion_runs insert failed (${run.source}):`,
+        error.message,
+      );
+      return null;
+    }
+    return (data?.id as string | undefined) ?? null;
+  } catch (err) {
+    console.warn(
+      `[persist] ingestion_runs insert threw (${run.source}):`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }

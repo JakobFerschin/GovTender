@@ -29,6 +29,11 @@ export const env = {
   get mistralApiKey(): string {
     return required("MISTRAL_API_KEY");
   },
+  /** Non-throwing, lazily-evaluated check for whether MISTRAL_API_KEY is configured. */
+  get hasMistralKey(): boolean {
+    const value = process.env["MISTRAL_API_KEY"];
+    return typeof value === "string" && value.trim() !== "";
+  },
   get mistralModel(): string {
     return optional("MISTRAL_MODEL", "mistral-small-latest");
   },
